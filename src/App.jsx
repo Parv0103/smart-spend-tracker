@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import {
+  PieChart, Pie, Cell, Tooltip as RTooltip, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend,
+} from "recharts";
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
@@ -133,7 +137,9 @@ function exportCSV(expenses) {
 
 // ─── EMPTY FORM ───────────────────────────────────────────────────────────────
 
-const EMPTY_FORM = { amount: "", category: "Food", method: "UPI", note: "" };
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const makeEmptyForm = () => ({ amount: "", category: "Food", method: "UPI", note: "", date: todayISO() });
+const EMPTY_FORM = makeEmptyForm();
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 
@@ -171,16 +177,18 @@ export default function ExpenseTracker() {
     const amt = parseFloat(form.amount);
     if (!amt || amt <= 0) { push("Enter a valid amount", "error"); return; }
     if (!form.note.trim()) { push("Please add a note", "warn"); return; }
+    // Use user-selected date, default to today; store as ISO with time at noon to avoid TZ shifts
+    const selectedDate = form.date ? new Date(form.date + "T12:00:00").toISOString() : new Date().toISOString();
     if (editingId) {
-      setExpenses((p) => p.map((e) => e.id === editingId ? { ...e, ...form, amount: amt } : e));
+      setExpenses((p) => p.map((e) => e.id === editingId ? { ...e, ...form, amount: amt, date: selectedDate } : e));
       setEditingId(null);
       push("Expense updated ✓");
     } else {
-      const entry = { id: Date.now(), ...form, amount: amt, date: new Date().toISOString() };
+      const entry = { id: Date.now(), ...form, amount: amt, date: selectedDate };
       setExpenses((p) => [entry, ...p]);
       push("Expense added ✓");
     }
-    setForm(EMPTY_FORM);
+    setForm(makeEmptyForm());
     setTab("home");
   }, [form, editingId, setExpenses, push]);
 
@@ -190,12 +198,12 @@ export default function ExpenseTracker() {
   }, [setExpenses, push]);
 
   const startEdit = useCallback((exp) => {
-    setForm({ amount: String(exp.amount), category: exp.category, method: exp.method, note: exp.note });
+    setForm({ amount: String(exp.amount), category: exp.category, method: exp.method, note: exp.note, date: isoDate(exp.date) });
     setEditingId(exp.id);
     setTab("add");
   }, []);
 
-  const cancelEdit = () => { setForm(EMPTY_FORM); setEditingId(null); };
+  const cancelEdit = () => { setForm(makeEmptyForm()); setEditingId(null); };
 
   const clearAll = () => {
     setExpenses([]);
@@ -225,28 +233,30 @@ export default function ExpenseTracker() {
   }, [expenses, search, filterCat, filterMethod, filterFrom, filterTo, sort]);
 
   // ── SUMMARIES ─────────────────────────────────────────────────────────────
+  // All home-tab stats are derived from `filtered` so they react to search/filters
 
-  const total = useMemo(() => expenses.reduce((s, e) => s + e.amount, 0), [expenses]);
+  const total = useMemo(() => filtered.reduce((s, e) => s + e.amount, 0), [filtered]);
 
   const periodExpenses = useMemo(() => {
     const since = startOf(reportPeriod);
+    // Reports tab always uses full expenses (not home filters)
     return expenses.filter((e) => new Date(e.date) >= since);
   }, [expenses, reportPeriod]);
 
   const todayTotal = useMemo(() => {
     const t = isoDate(Date.now());
-    return expenses.filter((e) => isoDate(e.date) === t).reduce((s, e) => s + e.amount, 0);
-  }, [expenses]);
+    return filtered.filter((e) => isoDate(e.date) === t).reduce((s, e) => s + e.amount, 0);
+  }, [filtered]);
 
   const weekTotal = useMemo(() => {
     const s = startOf("week");
-    return expenses.filter((e) => new Date(e.date) >= s).reduce((s, e) => s + e.amount, 0);
-  }, [expenses]);
+    return filtered.filter((e) => new Date(e.date) >= s).reduce((s, e) => s + e.amount, 0);
+  }, [filtered]);
 
   const monthTotal = useMemo(() => {
     const s = startOf("month");
-    return expenses.filter((e) => new Date(e.date) >= s).reduce((s, e) => s + e.amount, 0);
-  }, [expenses]);
+    return filtered.filter((e) => new Date(e.date) >= s).reduce((s, e) => s + e.amount, 0);
+  }, [filtered]);
 
   const catBreakdown = useMemo(() => {
     const map = {};
@@ -261,6 +271,28 @@ export default function ExpenseTracker() {
   }, [periodExpenses]);
 
   const periodTotal = useMemo(() => periodExpenses.reduce((s, e) => s + e.amount, 0), [periodExpenses]);
+
+  // Pie chart data: category-wise
+  const pieData = useMemo(() =>
+    catBreakdown.map(([name, value]) => ({ name, value })),
+  [catBreakdown]);
+
+  // Bar chart data: daily trend (last 14 days for week, last 30 for month)
+  const barData = useMemo(() => {
+    const days = reportPeriod === "week" ? 7 : 30;
+    const result = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const key = isoDate(d);
+      const dayLabel = d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+      const amt = periodExpenses
+        .filter((e) => isoDate(e.date) === key)
+        .reduce((s, e) => s + e.amount, 0);
+      result.push({ date: dayLabel, amount: amt });
+    }
+    return result;
+  }, [periodExpenses, reportPeriod]);
 
   const topCat = catBreakdown[0]?.[0];
 
@@ -541,6 +573,18 @@ export default function ExpenseTracker() {
                 />
               </div>
 
+              {/* Date */}
+              <div>
+                <label style={S.label(D)}>Date</label>
+                <input
+                  type="date"
+                  max={todayISO()}
+                  value={form.date}
+                  onChange={(e) => setForm({ ...form, date: e.target.value })}
+                  style={{ ...S.input, ...(D ? S.inputDark : {}) }}
+                />
+              </div>
+
               <button onClick={handleSubmit} style={{ ...S.btn, ...S.btnPrimary, fontSize: 16, padding: "14px 0", marginTop: 4 }}>
                 {editingId ? "Update Expense ✓" : "Add Expense +"}
               </button>
@@ -644,6 +688,78 @@ export default function ExpenseTracker() {
                     );
                   })}
                 </div>
+
+                {/* PIE CHART — Category-wise */}
+                <div style={{ ...S.card, ...(D ? S.cardDark : {}), marginTop: 14 }}>
+                  <div style={{ ...S.sectionTitle, color: D ? "#e8e8f0" : "#1a1a2e", fontSize: 14, marginBottom: 14 }}>
+                    Category Split
+                  </div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <PieChart>
+                      <Pie
+                        data={pieData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={55}
+                        outerRadius={85}
+                        paddingAngle={3}
+                        dataKey="value"
+                        label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                        labelLine={false}
+                      >
+                        {pieData.map((entry) => (
+                          <Cell key={entry.name} fill={(CAT_MAP[entry.name] || { color: "#6b7280" }).color} />
+                        ))}
+                      </Pie>
+                      <RTooltip
+                        formatter={(v) => fmt(v)}
+                        contentStyle={{
+                          background: D ? "#1a1a28" : "#fff",
+                          border: `1px solid ${D ? "#2a2a3a" : "#e5e7eb"}`,
+                          borderRadius: 10,
+                          fontSize: 13,
+                          color: D ? "#e8e8f0" : "#1a1a2e",
+                        }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* BAR CHART — Daily trend */}
+                <div style={{ ...S.card, ...(D ? S.cardDark : {}), marginTop: 14, marginBottom: 24 }}>
+                  <div style={{ ...S.sectionTitle, color: D ? "#e8e8f0" : "#1a1a2e", fontSize: 14, marginBottom: 14 }}>
+                    Daily Spending Trend
+                  </div>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={barData} margin={{ top: 0, right: 8, left: -16, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={D ? "#2a2a3a" : "#f0f0f5"} />
+                      <XAxis
+                        dataKey="date"
+                        tick={{ fontSize: 10, fill: D ? "#a0a0b8" : "#9ca3af" }}
+                        interval={reportPeriod === "month" ? 4 : 0}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 10, fill: D ? "#a0a0b8" : "#9ca3af" }}
+                        tickFormatter={(v) => `₹${v}`}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <RTooltip
+                        formatter={(v) => [fmt(v), "Spent"]}
+                        contentStyle={{
+                          background: D ? "#1a1a28" : "#fff",
+                          border: `1px solid ${D ? "#2a2a3a" : "#e5e7eb"}`,
+                          borderRadius: 10,
+                          fontSize: 13,
+                          color: D ? "#e8e8f0" : "#1a1a2e",
+                        }}
+                      />
+                      <Bar dataKey="amount" fill="#7c3aed" radius={[6, 6, 0, 0]} maxBarSize={32} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </>
             )}
           </div>
@@ -665,7 +781,7 @@ export default function ExpenseTracker() {
               color: tab === t.id ? "#7c3aed" : D ? "#6b7280" : "#9ca3af",
               fontWeight: tab === t.id ? 700 : 400,
             }}
-            onClick={() => { setTab(t.id); if (t.id !== "add") { setEditingId(null); setForm(EMPTY_FORM); } }}
+            onClick={() => { setTab(t.id); if (t.id !== "add") { setEditingId(null); setForm(makeEmptyForm()); } }}
           >
             <span style={{ fontSize: 20, display: "block", marginBottom: 2 }}>{t.icon}</span>
             <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>{t.label}</span>
